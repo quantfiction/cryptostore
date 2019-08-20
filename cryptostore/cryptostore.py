@@ -4,26 +4,30 @@ Copyright (C) 2018-2019  Bryant Moscon - bmoscon@gmail.com
 Please see the LICENSE file for the terms and conditions
 associated with this software.
 '''
-from multiprocessing import Process, Queue
+from multiprocessing import Queue
 import asyncio
 import logging
 import json
+import os
 
 from cryptostore.spawn import Spawn
-from cryptostore.config import Config
+from cryptostore.config import DynamicConfig
 from cryptostore.log import get_logger
 from cryptostore.aggregator.aggregator import Aggregator
+from cryptostore.plugin.controller import PluginController
 
 
-LOG = get_logger('cryptostore', 'cryptostore.log', logging.INFO)
+LOG = get_logger('cryptostore', 'cryptostore.log', logging.INFO, size=50000000, num_files=10)
 
 
 class Cryptostore:
-    def __init__(self):
+    def __init__(self, config=None):
         self.queue = Queue()
         self.spawner = Spawn(self.queue)
         self.running_config = {}
-
+        self.cfg_path = config
+        self.plugin = PluginController(config)
+        self.plugin.start()
 
     async def _load_config(self, start, stop):
         LOG.info("start: %s stop: %s", str(start), str(stop))
@@ -38,7 +42,7 @@ class Cryptostore:
         start = []
 
         if self.running_config != config:
-            if not config or 'exchanges' not in config or len(config['exchanges']) == 0:
+            if not config or 'exchanges' not in config or not config['exchanges'] or len(config['exchanges']) == 0:
                 # shut it all down
                 stop = list(self.running_config['exchanges'].keys()) if 'exchanges' in self.running_config else []
                 self.running_config = config
@@ -69,16 +73,17 @@ class Cryptostore:
 
     def run(self):
         LOG.info("Starting cryptostore")
+        LOG.info("Cryptostore running on PID %d", os.getpid())
+
         self.spawner.start()
         LOG.info("Spawner started")
 
-        self.aggregator = Aggregator()
+        self.aggregator = Aggregator(config_file=self.cfg_path)
         self.aggregator.start()
         LOG.info("Aggregator started")
 
-
         loop = asyncio.get_event_loop()
-        self.config = Config(callback=self._reconfigure)
+        self.config = DynamicConfig(file_name=self.cfg_path, callback=self._reconfigure)
 
         LOG.info("Cryptostore started")
         loop.run_forever()

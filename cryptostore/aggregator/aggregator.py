@@ -8,12 +8,12 @@ import asyncio
 from multiprocessing import Process
 import time
 import logging
+import os
 
-import redis
-
-from cryptostore.aggregator.parquet import Parquet
-from cryptostore.aggregator.arctic import Arctic
-from cryptostore.config import Config
+from cryptostore.aggregator.redis import Redis
+from cryptostore.aggregator.kafka import Kafka
+from cryptostore.data.storage import Storage
+from cryptostore.config import DynamicConfig
 
 
 LOG = logging.getLogger('cryptostore')
@@ -23,41 +23,56 @@ class Aggregator(Process):
     def __init__(self, config_file=None):
         self.config_file = config_file
         super().__init__()
+        self.daemon = True
 
     def run(self):
+        LOG.info("Aggregator running on PID %d", os.getpid())
         loop = asyncio.get_event_loop()
-        self.config = Config()
+        self.config = DynamicConfig(file_name=self.config_file)
         loop.create_task(self.loop())
-        loop.run_forever()
-
-    def __storage(self):
-        if self.config.storage == 'parquet':
-            return Parquet()
-        elif self.config.storage == 'arctic':
-            return Arctic(self.config.arctic)
-        else:
-            raise ValueError("Store type not supported")
+        try:
+            loop.run_forever()
+        except KeyboardInterrupt:
+            pass
 
     async def loop(self):
+        if self.config.cache == 'redis':
+            cache = Redis(self.config.redis['ip'],
+                          self.config.redis['port'],
+                          del_after_read=self.config.redis['del_after_read'],
+                          flush=self.config.redis['start_flush'])
+        elif self.config.cache == 'kafka':
+            cache = Kafka(self.config.kafka['ip'],
+                          self.config.kafka['port'],
+                          flush=self.config.kafka['start_flush'])
+
         while True:
-            r = redis.Redis(self.config.redis['ip'], port=self.config.redis['port'], decode_responses=True)
-            for exchange in self.config.exchanges:
-                for dtype in self.config.exchanges[exchange]:
-                    for pair in self.config.exchanges[exchange][dtype]:
-                        store = self.__storage()
-                        LOG.info(f'Reading {dtype}-{exchange}-{pair}')
-                        data = r.xread({f'{dtype}-{exchange}-{pair}': '0-0'})
-
-                        if len(data) == 0:
+            start = time.time()
+            if 'exchanges' in self.config and self.config.exchanges:
+                for exchange in self.config.exchanges:
+                    for dtype in self.config.exchanges[exchange]:
+                        if dtype in {'retries'}:
                             continue
+                        for pair in self.config.exchanges[exchange][dtype] if 'symbols' not in self.config.exchanges[exchange][dtype] else self.config.exchanges[exchange][dtype]['symbols']:
+                            store = Storage(self.config)
+                            LOG.info('Reading %s-%s-%s', exchange, dtype, pair)
 
-                        agg = []
-                        ids = []
-                        for update_id, update in data[0][1]:
-                            ids.append(update_id)
-                            agg.append(update)
+                            data = cache.read(exchange, dtype, pair)
+                            if len(data) == 0:
+                                LOG.info('No data for %s-%s-%s', exchange, dtype, pair)
+                                continue
 
-                        store.aggregate(agg)
-                        store.write(exchange, dtype, pair, time.time())
-                        r.xdel(f'{dtype}-{exchange}-{pair}', *ids)
-            await asyncio.sleep(self.config.storage_interval)
+                            store.aggregate(data)
+                            store.write(exchange, dtype, pair, time.time())
+
+                            cache.delete(exchange, dtype, pair)
+                            LOG.info('Write Complete %s-%s-%s', exchange, dtype, pair)
+
+                total = time.time() - start
+                interval = self.config.storage_interval - total
+                if interval <= 0:
+                    LOG.warning("Storage operations currently take %.1f seconds, longer than the interval of %d", total, self.config.storage_interval)
+                    interval = 0.5
+                await asyncio.sleep(interval)
+            else:
+                await asyncio.sleep(30)

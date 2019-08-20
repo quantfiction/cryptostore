@@ -10,7 +10,40 @@ import os
 import yaml
 
 
+class AttrDict(dict):
+    def __init__(self, d=None):
+        super().__init__()
+        if d:
+            for k, v in d.items():
+                self.__setitem__(k, v)
+
+    def __setitem__(self, key, value):
+        if isinstance(value, dict):
+            value = AttrDict(value)
+        super().__setitem__(key, value)
+
+    def __getattr__(self, item):
+        try:
+            return self.__getitem__(item)
+        except KeyError:
+            raise AttributeError(item)
+
+    __setattr__ = __setitem__
+
+
 class Config:
+    def __init__(self, file_name):
+        with open(file_name) as fp:
+            self.config = AttrDict(yaml.load(fp, Loader=yaml.FullLoader))
+
+    def __getattr__(self, attr):
+        return self.config[attr]
+
+    def __contains__(self, item):
+        return item in self.config
+
+
+class DynamicConfig(Config):
     def __init__(self, file_name=None, reload_interval=10, callback=None):
         if file_name is None:
             if 'CRYPTOSTORE_CONFIG' in os.environ:
@@ -18,13 +51,10 @@ class Config:
             else:
                 file_name = os.path.join(os.getcwd(), 'config.yaml')
         if not os.path.isfile(file_name):
-            raise FileNotFoundError(f"File {file_name} does not exist")
+            raise FileNotFoundError(f"Config file {file_name} not found")
 
         self.config = {}
         self._load(file_name, reload_interval, callback)
-
-    def __getattr__(self, attr):
-        return self.config[attr]
 
     async def __loader(self, file, interval, callback):
         last_modified = 0
@@ -32,7 +62,7 @@ class Config:
             cur_mtime = os.stat(file).st_mtime
             if cur_mtime != last_modified:
                 with open(file, 'r') as fp:
-                    self.config = yaml.load(fp)
+                    self.config = AttrDict(yaml.load(fp, Loader=yaml.FullLoader))
                     if callback is not None:
                         await callback(self.config)
                     last_modified = cur_mtime

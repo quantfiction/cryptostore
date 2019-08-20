@@ -4,11 +4,9 @@ Copyright (C) 2018-2019  Bryant Moscon - bmoscon@gmail.com
 Please see the LICENSE file for the terms and conditions
 associated with this software.
 '''
-import sys
-
 from setuptools import setup
 from setuptools import find_packages
-from setuptools.command.test import test as TestCommand
+
 
 ld = None
 try:
@@ -20,27 +18,37 @@ except BaseException:
 
 setup(
     name="cryptostore",
-    version="0.0.2",
+    version="0.1.0",
     author="Bryant Moscon",
     author_email="bmoscon@gmail.com",
     description=("Storage engine for cryptocurrency data"),
     long_description=ld,
     long_description_content_type='text/x-rst',
     license="XFree86",
-    keywords=["cryptocurrency", "bitcoin", "btc", "feed handler", "market feed", "market data", "data storage"],
+    keywords=["cryptocurrency", "bitcoin", "btc", "market data", "data storage", "redis", "database", "kafka"],
     url="https://github.com/bmoscon/cryptostore",
     packages=find_packages(),
     classifiers=[
-        "Development Status :: 2 - Pre-Alpha",
+        "Development Status :: 4 - Beta",
         "Programming Language :: Python :: 3.6",
         "Programming Language :: Python :: 3.7",
     ],
     install_requires=[
-        "pandas"
-        "cryptofeed",
+        "pandas",
+        "cryptofeed>=1.0.0",
         "pyyaml",
-        "aioredis",
         "pyarrow",
-        "arctic"
+        "aiohttp"
     ],
+    extras_require={
+        'redis': ['redis', 'aioredis'],
+        'kafka': ['aiokafka', 'confluent-kafka'],
+        'arctic': ['arctic'],
+        'gcs': ['google-cloud-storage'],
+        'aws': ['boto3'],
+        'zmq': ['pyzmq']
+    },
+    entry_points = {
+        'console_scripts': ['cryptostore=cryptostore.bin.cryptostore:main'],
+    }
 )
